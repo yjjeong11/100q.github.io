@@ -167,6 +167,11 @@ button.c:disabled{cursor:default}
 .crow input{flex:1;min-width:0;padding:8px 12px;border:2px solid var(--ink);border-radius:999px;background:#fff;font-size:.88rem}
 .crow input:focus{outline:none;border-color:var(--accent)}
 .crow .btn{padding:6px 14px;font-size:.86rem}
+.cmt li .cx + .cx{margin-left:2px}
+.cmt li .ced{font-size:.7rem;color:var(--muted);margin-left:4px}
+.cmt .clock{font-size:.8rem;color:var(--muted)}
+.cmt li.editing{display:block}
+.cbtn b{font-weight:400;color:var(--accent);text-decoration:none}
 .tools{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:12px}
 .tools .btn{font-size:.9rem;padding:8px 16px}
 .tabs button{font-size:.84rem}
@@ -251,7 +256,7 @@ const todayDay = () => Math.min(100, Math.max(0, rawToday()));
 /* ===================== 설정: 여기 한 줄만 바꾸면 됨 =====================
    구글 시트 > 확장 프로그램 > Apps Script 에서 '웹 앱'으로 배포한 뒤 받은 주소
    (https://script.google.com/macros/s/..../exec 형태)                      */
-const SCRIPT_URL = "여기에-웹앱-주소-붙여넣기";
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxteN57vu1V4UGAFTLPloMezN8-K4craHfrPiigoxYGbkNJsbMdQ3-Qg8x0iy4ju4Fe/exec";
 /* ======================================================================== */
  
 /* ---------- 저장소 (구글 시트 + Apps Script) ----------
@@ -279,7 +284,8 @@ function errMsg(e){
   if(e && /members_full/.test(e.message)) return "다섯 자리가 모두 찼어요.";
   if(e && /nick_taken/.test(e.message)) return "같은 닉네임이 있어요. 다른 이름을 골라 주세요.";
   if(e && /no_answer/.test(e.message)) return "답이 지워져서 댓글을 달 수 없어요.";
-  if(e && /not_yours/.test(e.message)) return "내가 쓴 댓글만 지울 수 있어요.";
+  if(e && /not_yours/.test(e.message)) return "내가 쓴 댓글만 고치거나 지울 수 있어요.";
+  if(e && /no_comment/.test(e.message)) return "이미 지워진 댓글이에요.";
   if(e && /bad_action/.test(e.message)) return "구글 시트 코드가 예전 버전이에요. Apps Script를 새 버전으로 다시 배포해 주세요.";
   if(e && /no_member/.test(e.message)) return "참여자 정보를 찾지 못했어요. 새로고침해 주세요.";
   if(e && /bad_response/.test(e.message)) return "구글 시트 연결 설정을 확인해 주세요. (웹 앱 공개 범위: 모든 사용자)";
@@ -302,7 +308,7 @@ async function write(fn){
 const S = { members:[], answers:{}, me:null, tab:"today", viewDay:1, editing:false,
             filter:"all", loading:true, fatal:"", drafts:{}, joinTheme:"orange", popDay:null, renaming:false,
             noAuto:false, dirty:false, pass:null, authed:false, checking:false,
-            comments:[], openCmt:new Set(), cdraft:{}, sending:false };
+            comments:[], openCmt:new Set(), cdraft:{}, sending:false, editCmt:null, cedit:"" };
 const app = document.getElementById("app");
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const meM = () => S.members.find(m => m.id === S.me);
@@ -511,7 +517,7 @@ function viewToday(){
       const a = ansOf(m.id, n);
       if(!a) return `<div class="ans empty"><div class="who">${heart(m.theme)}${esc(m.nick)}</div><p>아직 쓰지 않았어요.</p></div>`;
       const body = mine ? esc(a.t) : "답이 여기 적혀 있어요. 먼저 내 답을 써 주세요.";
-      return `<div class="ans ${mine ? "" : "locked"}"><div class="who">${heart(m.theme)}${esc(m.nick)}${isLate(a,n) ? "<em>나중에 씀</em>" : ""}</div><p>${body}</p></div>`;
+      return `<div class="ans ${mine ? "" : "locked"}"><div class="who">${heart(m.theme)}${esc(m.nick)}${isLate(a,n) ? "<em>나중에 씀</em>" : ""}</div><p>${body}</p>${cmtBlock(m.id + "_" + n, !mine)}</div>`;
     }).join("");
   }
  
@@ -580,14 +586,21 @@ function viewMemo(){
  
 /* ---------- 댓글 ---------- */
 function cmtWhen(t){ const d = new Date(t); return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
-function cmtBlock(key){
-  const list = S.comments.filter(c => c.key === key).sort((a,b) => a.at - b.at);
+const cmtsOf = key => S.comments.filter(c => c.key === key).sort((a,b) => a.at - b.at);
+function cmtBlock(key, locked){
+  const list = cmtsOf(key);
+  if(locked) return list.length ? `<div class="cmt"><span class="clock">댓글 ${list.length}개 · 이 날 내 답을 쓰면 볼 수 있어요</span></div>` : "";
   const open = S.openCmt.has(key);
   const items = list.map(c => {
     const who = S.members.find(m => m.id === c.member_id) || { nick: "(나간 친구)", theme: "orange" };
-    return `<li>${heart(who.theme)}<b>${esc(who.nick)}</b><span class="ctx">${esc(c.body)}</span><span class="ct">${cmtWhen(c.at)}</span>${c.member_id === S.me ? `<button class="cx" data-act="cdel" data-id="${esc(c.id)}">삭제</button>` : ""}</li>`;
+    const mineC = c.member_id === S.me;
+    if(mineC && S.editCmt === c.id) return `<li class="editing"><div class="crow" style="margin:0">
+        <input class="cein" data-id="${esc(c.id)}" maxlength="200" value="${esc(S.cedit)}" autocomplete="off">
+        <button class="btn ghost" data-act="csave" data-id="${esc(c.id)}" ${S.sending ? "disabled" : ""}>저장</button>
+        <button class="btn ghost" data-act="ccancel">취소</button></div></li>`;
+    return `<li>${heart(who.theme)}<b>${esc(who.nick)}</b><span class="ctx">${esc(c.body)}${c.edited ? `<span class="ced">(수정됨)</span>` : ""}</span><span class="ct">${cmtWhen(c.at)}</span>${mineC ? `<button class="cx" data-act="cedit" data-id="${esc(c.id)}">수정</button><button class="cx" data-act="cdel" data-id="${esc(c.id)}">삭제</button>` : ""}</li>`;
   }).join("");
-  return `<div class="cmt"><button class="cbtn" data-act="ctoggle" data-key="${esc(key)}">${open ? "댓글 접기" : list.length ? `댓글 ${list.length}개 보기` : "댓글 달기"}</button>
+  return `<div class="cmt"><button class="cbtn" data-act="ctoggle" data-key="${esc(key)}">${open ? "댓글 접기" : list.length ? `댓글 <b>${list.length}</b>개 보기` : "댓글 달기"}</button>
     ${open ? `${items ? `<ul>${items}</ul>` : ""}
       <div class="crow"><input class="cin" data-key="${esc(key)}" maxlength="200" placeholder="댓글을 남겨 주세요" value="${esc(S.cdraft[key] || "")}" autocomplete="off">
       <button class="btn ghost" data-act="csend" data-key="${esc(key)}" ${S.sending ? "disabled" : ""}>등록</button></div>` : ""}
@@ -602,15 +615,30 @@ async function sendComment(key){
   const ok = await write(() => rpc("qna_comment", { m_id: S.me, c_id: id, c_key: key, c_body: body }));
   S.sending = false;
   if(!ok){ render(); return; }
-  S.comments.push({ id, key, member_id: S.me, body, at: Date.now() });
+  S.comments.push({ id, key, member_id: S.me, body, at: Date.now(), edited: 0 });
   delete S.cdraft[key];
   document.activeElement?.blur();
+  render(); toast("댓글을 달았어요.");
+}
+async function saveEdit(id){
+  const body = (S.cedit || "").trim();
+  if(!body) return toast("댓글 내용을 입력해 주세요.");
+  if(S.sending) return;
+  S.sending = true;
+  const ok = await write(() => rpc("qna_comment_edit", { m_id: S.me, c_id: id, c_body: body }));
+  S.sending = false;
+  if(ok){
+    const c = S.comments.find(x => x.id === id); if(c){ c.body = body; c.edited = Date.now(); }
+    S.editCmt = null; S.cedit = "";
+    document.activeElement?.blur();
+    toast("댓글을 고쳤어요.");
+  }
   render();
 }
 async function deleteComment(id){
   if(!confirm("이 댓글을 지울까요?")) return;
   const ok = await write(() => rpc("qna_comment_delete", { m_id: S.me, c_id: id }));
-  if(ok){ S.comments = S.comments.filter(c => c.id !== id); render(); }
+  if(ok){ S.comments = S.comments.filter(c => c.id !== id); render(); toast("댓글을 지웠어요."); }
 }
  
 /* ---------- 화면: 모아보기 (모두의 답) ---------- */
@@ -623,7 +651,7 @@ function viewArchive(){
     const rows = list.map(m => {
       const a = ansOf(m.id, n); if(!a) return "";
       const locked = m.id !== me.id && !mine;
-      return `<div class="ans ${locked ? "locked" : ""}"><div class="who">${heart(m.theme)}${esc(m.nick)}</div><p>${locked ? "먼저 이 날 내 답을 써 주세요." : esc(a.t)}</p>${locked ? "" : cmtBlock(m.id + "_" + n)}</div>`;
+      return `<div class="ans ${locked ? "locked" : ""}"><div class="who">${heart(m.theme)}${esc(m.nick)}</div><p>${locked ? "먼저 이 날 내 답을 써 주세요." : esc(a.t)}</p>${cmtBlock(m.id + "_" + n, locked)}</div>`;
     }).join("");
     if(!rows && S.filter !== "all") continue;
     const anyLocked = !mine && list.some(m => m.id !== me.id && ansOf(m.id, n));
@@ -714,6 +742,9 @@ app.addEventListener("click", async e => {
   else if(act === "ctoggle"){ const k = b.dataset.key; S.openCmt.has(k) ? S.openCmt.delete(k) : S.openCmt.add(k); render(); if(S.openCmt.has(k)) app.querySelector(`.cin[data-key="${CSS.escape(k)}"]`)?.focus(); }
   else if(act === "csend") sendComment(b.dataset.key);
   else if(act === "cdel") deleteComment(b.dataset.id);
+  else if(act === "cedit"){ const c = S.comments.find(x => x.id === b.dataset.id); if(!c) return; S.editCmt = c.id; S.cedit = c.body; render(); const el = app.querySelector(`.cein[data-id="${CSS.escape(c.id)}"]`); if(el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }
+  else if(act === "ccancel"){ S.editCmt = null; S.cedit = ""; render(); }
+  else if(act === "csave") saveEdit(b.dataset.id);
   else if(act === "pick"){
     S.me = b.dataset.id; lsSet(S.me); S.noAuto = false; S.tab = "today"; render();
   }
@@ -739,10 +770,13 @@ app.addEventListener("keydown", e => { if(e.target.id === "pass" && e.key === "E
  
 app.addEventListener("keydown", e => {
   if(e.target.classList?.contains("cin") && e.key === "Enter" && !e.isComposing){ e.preventDefault(); sendComment(e.target.dataset.key); }
+  if(e.target.classList?.contains("cein") && e.key === "Enter" && !e.isComposing){ e.preventDefault(); saveEdit(e.target.dataset.id); }
+  if(e.target.classList?.contains("cein") && e.key === "Escape"){ S.editCmt = null; S.cedit = ""; render(); }
 });
  
 app.addEventListener("input", e => {
   if(e.target.classList?.contains("cin")) S.cdraft[e.target.dataset.key] = e.target.value;
+  if(e.target.classList?.contains("cein")) S.cedit = e.target.value;
   if(e.target.id === "ta"){
     S.drafts[S.viewDay] = e.target.value;
     document.getElementById("cnt").textContent = e.target.value.length;
@@ -759,3 +793,4 @@ start();
 </script>
 </body>
 </html>
+ 
